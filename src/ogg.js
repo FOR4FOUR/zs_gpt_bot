@@ -1,7 +1,5 @@
-import axios from 'axios'
+import { createWriteStream } from 'fs'
 import ffmpeg from 'fluent-ffmpeg'
-import installer from '@ffmpeg-installer/ffmpeg'
-import {createWriteStream} from 'fs'
 import {dirname, resolve} from 'path'
 import {fileURLToPath} from 'url'
 import {removeFile} from "./utils.js";
@@ -10,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 class OggConverter {
     constructor() {
-        ffmpeg.setFfmpegPath(installer.path)
+        // Use system ffmpeg available in PATH (installed via Docker)
     }
 
     toMp3(input, output) {
@@ -35,15 +33,12 @@ class OggConverter {
     async create(url, filename) {
         try {
             const oggPath = resolve(__dirname, '../voices', `${filename}.ogg`)
-            const response = await axios({
-                method: 'get',
-                url,
-                responseType: 'stream',
-            })
+            const res = await fetch(url)
+            if (!res.ok || !res.body) throw new Error(`Failed to download ogg: ${res.status}`)
             return new Promise((resolve) => {
-                const stream = createWriteStream(oggPath)
-                response.data.pipe(stream)
-                stream.on('finish', () => resolve(oggPath))
+                const fileStream = createWriteStream(oggPath)
+                res.body.pipe(fileStream)
+                fileStream.on('finish', () => resolve(oggPath))
             })
         } catch (e) {
             console.log('Error while creating ogg', e.message)
