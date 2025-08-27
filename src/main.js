@@ -2,11 +2,15 @@ import { Telegraf, session } from 'telegraf'
 import { message } from 'telegraf/filters'
 import { code } from 'telegraf/format'
 import config from 'config'
-import {ogg} from "./ogg.js"
+// lazy import to avoid loading ffmpeg until needed
 import {openai} from "./openai.js";
 
-const INITIAL_SESSION = {
-    messages: []
+const MAX_HISTORY_MESSAGES = 12
+const INITIAL_SESSION = { messages: [] }
+
+function getTrimmedHistory(messages) {
+    if (!Array.isArray(messages) || messages.length <= MAX_HISTORY_MESSAGES) return messages || []
+    return messages.slice(-MAX_HISTORY_MESSAGES)
 }
 
 const bot = new Telegraf(config.get('TELEGRAM_TOKEN'))
@@ -27,19 +31,22 @@ bot.on(message('voice'), async (ctx) => {
     ctx.session ??= INITIAL_SESSION
     try{
         await ctx.reply(code('Жду ответ сервера'))
-        const link = await ctx.telegram.getFileLink(ctx.message.voice.file_id)  //получаем ссылку на голосовое сообщение
+        const link = await ctx.telegram.getFileLink(ctx.message.voice.file_id)
         const userId = String(ctx.message.from.id) // id пользователя Telegram
-        const oggPath = await ogg.create(link.href, userId) // ссылка на ogg-файл
-        const mp3Path = await ogg.toMp3(oggPath, userId) // ссылка на mp3-файл
+        const { ogg } = await import('./ogg.js')
+        const oggPath = await ogg.create(link.href, userId)
+        const mp3Path = await ogg.toMp3(oggPath, userId)
 
         const text = await openai.transcription(mp3Path) // расшифрованный текст голосового сообщения
+        // cleanup mp3 after transcription to free disk space
+        try { (await import('./utils.js')).removeFile(mp3Path) } catch {}
         await ctx.reply(code(`Ваше голосовое в тексте: ${text}`))
 
-        ctx.session.messages.push({role: openai.roles.USER,content: text})
-
+        ctx.session.messages.push({role: openai.roles.USER, content: text})
+        ctx.session.messages = getTrimmedHistory(ctx.session.messages)
         const response = await openai.chat(ctx.session.messages)
 
-        ctx.session.messages.push({role: openai.roles.ASSISTANT,content: response.content})
+        ctx.session.messages.push({role: openai.roles.ASSISTANT, content: response.content})
 
         await ctx.reply(response.content)
     } catch(e) {
@@ -52,11 +59,8 @@ bot.on(message('text'), async (ctx) => {
     try{
         await ctx.reply(code('Жду ответ сервера'))
 
-        ctx.session.messages.push({
-            role: openai.roles.USER,
-            content: ctx.message.text
-        })
-
+        ctx.session.messages.push({ role: openai.roles.USER, content: ctx.message.text })
+        ctx.session.messages = getTrimmedHistory(ctx.session.messages)
         const response = await openai.chat(ctx.session.messages)
 
         ctx.session.messages.push({
@@ -70,7 +74,7 @@ bot.on(message('text'), async (ctx) => {
     }
 })
 
-bot.launch()
+bot.launch({ dropPendingUpdates: true })
 
 process.once('SIGINT', () => bot.stop('SIGINT'))
 process.once('SIGTERM', () => bot.stop('SIGTERM'))
